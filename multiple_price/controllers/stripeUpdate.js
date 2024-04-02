@@ -1,13 +1,15 @@
 const Product = require("../models/Product");
 const ProductUpdate = require("../models/ProductUpdate");
 const SubscriptionRequest = require("../models/SubscriptionRequest");
+const SubscriptionUpdateRequest = require("../models/SubscriptionRequestUpdate");
+const User = require("../models/User");
 const utils = require("../utils/utils");
 
 const dotenv = require("dotenv").config();
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const endpointSecret = process.env.STRIPE_END_POINT_SECRET;
 
-class StripeController {
+class StripeUpdateController {
   async createPaymentIntent(req, res, next) {
     try {
       const paymentIntent = await stripe.paymentIntents.create({
@@ -32,6 +34,7 @@ class StripeController {
       });
     }
   }
+
   async createProduct(req, res, next) {
     try {
       let producId;
@@ -87,11 +90,19 @@ class StripeController {
       });
     }
   }
+
+  // Make Request For AI
   async makeRequest(req, res, next) {
     try {
-      const makeRequest = new SubscriptionRequest({
+      const user = new User({
         username: req.body.username,
         email: req.body.email,
+      });
+      await user.save();
+      const userId = user._id;
+
+      const makeRequest = new SubscriptionUpdateRequest({
+        userId: userId,
         productId: req.body.productId,
       });
       await makeRequest.save();
@@ -111,21 +122,20 @@ class StripeController {
 
   async getAllRequest(req, res, next) {
     try {
-      const subscriptionRequests = await SubscriptionRequest.find();
-      // console.log("subReq",subscriptionRequests);
-      const requestWithProducts = await Promise.all(
-        subscriptionRequests.map(async (subscriptionRequest) => {
-          const product = await Product.findById(subscriptionRequest.productId);
-          // if (!product) {
-          //   throw new Error(`Product not found for subscription request with ID ${subscriptionRequest._id}`);
-          // }
-          return { ...subscriptionRequest.toObject(), product };
-        })
-      );
+      const subscriptionRequests = await SubscriptionUpdateRequest.find();
+
+const requestWithProductsAndUsers = await Promise.all(
+  subscriptionRequests.map(async (subscriptionRequest) => {
+    const populatedRequest = await SubscriptionUpdateRequest.findById(subscriptionRequest._id)
+      .populate('productId')
+      .populate('userId'); 
+    return populatedRequest;
+  })
+);
       return res.status(200).send({
         success: true,
         message: "Get all request has been fetched successfully.",
-        result: requestWithProducts,
+        result: requestWithProductsAndUsers,
       });
     } catch (error) {
       return res.status(500).send({
@@ -140,8 +150,14 @@ class StripeController {
     try {
       const requestId = req.params.id;
       const { productId, price, content } = req.body;
+      console.log(req.body);
       let priceForLinkCreation;
-      const subReq = await SubscriptionRequest.findById(requestId);
+      const subReq = await SubscriptionUpdateRequest.findById(requestId)
+  const userAndProductData = await SubscriptionUpdateRequest.findById(requestId)
+  .populate('productId')
+  .populate('userId');
+
+      console.log("subReq", subReq);
       if (!subReq) {
         return res.status(400).send({
           success: false,
@@ -153,7 +169,7 @@ class StripeController {
         subReq.productId = productId;
         await subReq.save();
       }
-      const product = await Product.findById(productId);
+      const product = await ProductUpdate.findById(productId);
       if (!product) {
         return res.status(400).send({
           success: false,
@@ -213,7 +229,7 @@ class StripeController {
       subReq.is_link_sent = true;
       await subReq.save();
       await utils.sendEmailForPaymentLink(
-        subReq.email,
+        userAndProductData.userId.email,
         paymentLink.url,
         content,
         res
@@ -272,20 +288,24 @@ class StripeController {
     });
   }
 
+  // Create Product For AI
   async createUpdateProduct(req, res, next) {
     try {
 
       const product = await stripe.products.create({
         name: req.body.title,
         description: req.body.description,
-        metadata: {
-          features_list: req.body.features_list
-        }
+        // metadata: {
+        //   features_list: req.body.features_list
+        // }
       });
       if (!product) {
         return res.status(400).send("Product creation failed.");
       }
-      const productObj = new ProductUpdate(req.body);
+      const productObj = new ProductUpdate({
+        ...req.body,
+        stripe_product_id: product.id
+      });
       await productObj.save();
       return res.status(200).send({
         success: true,
@@ -301,4 +321,4 @@ class StripeController {
     }
   }
 }
-module.exports = new StripeController();
+module.exports = new StripeUpdateController();
